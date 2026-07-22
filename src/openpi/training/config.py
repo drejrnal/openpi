@@ -761,6 +761,70 @@ _CONFIGS = [
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
+    # Full fine-tune of pi05_base on the locally converted LIBERO-object dataset
+    # (see worktree/pi_inference_test/convert_libero_object.py). Tuned for a small
+    # ~150-demo set: shorter warmup and fewer steps than pi05_libero. Launch with
+    # FSDP across your GPUs, e.g. `--fsdp-devices=8`, since a full pi05 fine-tune
+    # needs >70GB and must be sharded on this box. The weight_loader path resolves
+    # to the pi05_base checkpoint already cached in ~/.cache/openpi (no re-download).
+    TrainConfig(
+        name="pi05_libero_object",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero_object",  # resolves to ~/.cache/huggingface/lerobot/libero_object
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=10_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=10_000,
+    ),
+    # LoRA fine-tune of pi05_base on the local libero_object dataset. Same data/weights
+    # as pi05_libero_object, but only low-rank adapters train (base weights frozen via
+    # freeze_filter), so it needs >22.5GB rather than >70GB -- fits the ~32GB free per
+    # GPU on this shared box. EMA is off (standard for LoRA). The freeze_filter's model
+    # config MUST match `model` above, or the wrong params get frozen.
+    TrainConfig(
+        name="pi05_libero_object_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero_object",  # resolves to ~/.cache/huggingface/lerobot/libero_object
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=10_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=10_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,  # turn off EMA for LoRA finetuning
+    ),
     #
     # Fine-tuning Aloha configs.
     #
