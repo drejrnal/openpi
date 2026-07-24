@@ -1030,8 +1030,9 @@ _CONFIGS = [
         batch_size=32,
     ),
     #
-    # LoRA fine-tune of the joint-position π0.5-DROID checkpoint on the local
-    # LeRobot v3 Franka dataset.
+    # Full-parameter fine-tune of the joint-position π0.5-DROID checkpoint on
+    # the local LeRobot v3 Franka dataset. Shard the model and optimizer across
+    # all eight GPUs because a full π0.5 fine-tune does not fit on one GPU.
     #
     TrainConfig(
         name="pi05_franka_finetune",
@@ -1039,8 +1040,6 @@ _CONFIGS = [
             pi05=True,
             action_dim=32,
             action_horizon=15,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
         ),
         data=LeRobotFrankaDataConfig(
             repo_id="franka_object",
@@ -1059,19 +1058,15 @@ _CONFIGS = [
             decay_lr=5e-6,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        freeze_filter=pi0_config.Pi0Config(
-            pi05=True,
-            action_dim=32,
-            action_horizon=15,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ).get_freeze_filter(),
-        ema_decay=None,
+        ema_decay=0.999,
         batch_size=32,
-        num_train_steps=5_000,
+        num_train_steps=10_000,
+        log_interval=20,
         save_interval=1_000,
         keep_period=1_000,
-        wandb_enabled=False,
+        project_name="openpi-franka",
+        wandb_enabled=True,
+        fsdp_devices=8,
         policy_metadata={
             "robot": "franka_panda",
             "cameras": ["right", "wrist"],

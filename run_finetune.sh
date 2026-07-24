@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Full fine-tune of pi05_base on the local libero_object dataset, with FSDP.
+# Full fine-tune of pi05_droid_jointpos on the local Franka LeRobot v3
+# dataset, with FSDP and Weights & Biases logging.
 #
 # Two stages: (1) compute normalization stats (CPU, safe while GPUs are busy),
 # (2) launch FSDP training across the chosen GPUs.
@@ -10,31 +11,51 @@
 #   STEPS=2000 BATCH_SIZE=16 ./run_finetune.sh
 #   ./run_finetune.sh --stats-only          # just compute norm stats, don't train
 #
-# Env overrides: EXP_NAME, GPUS, FSDP_DEVICES, BATCH_SIZE, STEPS
+# Before the first training run:
+#   uv run wandb login
 #
-# A full pi05 fine-tune needs >70GB on a single card, so it MUST be sharded: set
-# FSDP_DEVICES to the number of GPUs in GPUS. With ~32GB free per GPU here, FSDP=8 puts
-# a ~9GB shard on each card, which fits. Uses on-demand GPU allocation (not the README's
-# 0.9 mem-fraction) so it coexists with the other jobs on this shared box.
-# For a lighter alternative that fits on ONE gpu, use run_finetune_lora.sh instead.
+# Env overrides: EXP_NAME, GPUS, FSDP_DEVICES, BATCH_SIZE, STEPS,
+# PROJECT_NAME, MEM_FRACTION, PYTHON.
+#
+# A full pi05 fine-tune needs >70GB on one card, so it must be sharded. Set
+# FSDP_DEVICES to the number of visible GPUs. The default 0.35 memory fraction
+# caps JAX at about 28GB on each 80GB A100, leaving room for existing processes.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="/home/mxy/openpi/.venv/bin/python"
-export PYTHONPATH="${HERE}/src"          # use THIS worktree's openpi (has the pi05_libero_object config)
+PYTHON="${PYTHON:-${HERE}/.venv/bin/python}"
+export PYTHONPATH="${HERE}/src"
 
-CONFIG="pi05_libero_object"
-EXP_NAME="${EXP_NAME:-libero_object_full_ft}"
-GPUS="${GPUS:-0,1,2,3,4,5}"
-FSDP_DEVICES="${FSDP_DEVICES:-6}"
-BATCH_SIZE="${BATCH_SIZE:-192}"
+CONFIG="pi05_franka_finetune"
+EXP_NAME="${EXP_NAME:-franka_object_full}"
+GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
+FSDP_DEVICES="${FSDP_DEVICES:-8}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
 STEPS="${STEPS:-10000}"
+PROJECT_NAME="${PROJECT_NAME:-openpi-franka}"
+MEM_FRACTION="${MEM_FRACTION:-0.35}"
 
 cd "${HERE}"
 
+if [[ ! -x "${PYTHON}" ]]; then
+  echo "Python environment not found at ${PYTHON}." >&2
+  echo "Run 'uv sync --group dev' in ${HERE}, then retry." >&2
+  exit 1
+fi
+
+IFS=',' read -r -a GPU_LIST <<< "${GPUS}"
+if [[ "${#GPU_LIST[@]}" -ne "${FSDP_DEVICES}" ]]; then
+  echo "FSDP_DEVICES=${FSDP_DEVICES} must equal the number of GPUs in GPUS=${GPUS}." >&2
+  exit 1
+fi
+if (( BATCH_SIZE % ${#GPU_LIST[@]} != 0 )); then
+  echo "BATCH_SIZE=${BATCH_SIZE} must be divisible by ${#GPU_LIST[@]} visible GPUs." >&2
+  exit 1
+fi
+
 # ---- Stage 1: normalization statistics (CPU only; harmless while GPUs are occupied) ----
-STATS="${HERE}/assets/${CONFIG}/libero_object/norm_stats.json"   # ./assets/<config>/libero_object/norm_stats.json
+STATS="${HERE}/assets/${CONFIG}/franka_object/norm_stats.json"
 if [[ -f "${STATS}" ]]; then
   echo "[1/2] norm stats already present: ${STATS}"
 else
@@ -48,21 +69,18 @@ if [[ "${1:-}" == "--stats-only" ]]; then
 fi
 
 # ---- Stage 2: FSDP full fine-tune ----
-echo "[2/2] launching full FT | gpus=${GPUS} fsdp=${FSDP_DEVICES} batch=${BATCH_SIZE} steps=${STEPS} exp=${EXP_NAME}"
-# NOTE: do NOT use the README's XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 here. That grabs
-# 0.9*80=72GB per card up front, which OOMs immediately on this SHARED box (~46GB is
-# already held by other jobs, only ~32GB free). Instead allocate on demand so JAX takes
-# only each GPU's FSDP shard (~9GB with fsdp=8) plus activations, fitting the free memory.
-# FSDP shards params/optimizer/gradients across FSDP_DEVICES, so aggregate GPU memory is
-# what counts; ensure FSDP_DEVICES divides the GPU count and BATCH_SIZE divides the GPU count.
+echo "[2/2] launching Franka full FT"
+echo "      gpus=${GPUS} fsdp=${FSDP_DEVICES} batch=${BATCH_SIZE} steps=${STEPS}"
+echo "      exp=${EXP_NAME} wandb_project=${PROJECT_NAME} mem_fraction=${MEM_FRACTION}"
 CUDA_VISIBLE_DEVICES="${GPUS}" \
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.5 \
+XLA_PYTHON_CLIENT_MEM_FRACTION="${MEM_FRACTION}" \
   "${PYTHON}" scripts/train.py "${CONFIG}" \
     --exp-name="${EXP_NAME}" \
     --fsdp-devices="${FSDP_DEVICES}" \
     --batch-size="${BATCH_SIZE}" \
     --num-train-steps="${STEPS}" \
-    --no-wandb-enabled \
+    --project-name="${PROJECT_NAME}" \
+    --wandb-enabled \
     --overwrite
 
 echo "done. checkpoints under: ${HERE}/checkpoints/${CONFIG}/${EXP_NAME}/"

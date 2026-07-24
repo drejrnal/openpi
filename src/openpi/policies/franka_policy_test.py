@@ -2,6 +2,7 @@ import numpy as np
 
 from openpi.models import model as _model
 from openpi.policies import franka_policy
+from openpi.training import config as _config
 
 
 def test_franka_inputs_accept_lerobot_v3_sample():
@@ -30,3 +31,14 @@ def test_franka_outputs_keep_robot_action_dimensions():
     result = franka_policy.FrankaOutputs()({"actions": actions})
 
     np.testing.assert_array_equal(result["actions"], actions[:, :8])
+
+
+def test_franka_finetune_config_uses_full_model_and_wandb():
+    config = _config.get_config("pi05_franka_finetune")
+
+    assert config.model.paligemma_variant == "gemma_2b"
+    assert config.model.action_expert_variant == "gemma_300m"
+    assert config.ema_decay == 0.999
+    assert config.fsdp_devices == 8
+    assert config.wandb_enabled
+    assert config.project_name == "openpi-franka"
