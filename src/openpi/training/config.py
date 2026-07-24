@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.franka_policy as franka_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -65,6 +66,9 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Optional local LeRobot dataset directory. If unset, LeRobot resolves repo_id
+    # under HF_LEROBOT_HOME or downloads it from the Hub.
+    lerobot_root: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -459,6 +463,51 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotFrankaDataConfig(DataConfigFactory):
+    """Transforms for the local v3 Franka joint-position dataset."""
+
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "observation.images.exterior_image",
+                        "observation/wrist_image": "observation.images.wrist_image",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        # The dataset contains absolute targets for joints 1-7. π0.5 is trained
+        # on deltas for these dimensions; the gripper command remains absolute.
+        joint_position_mask = _transforms.make_bool_mask(7, -1)
+        data_transforms = _transforms.Group(
+            inputs=[
+                franka_policy.FrankaInputs(model_type=model_config.model_type),
+                _transforms.DeltaActions(joint_position_mask),
+            ],
+            outputs=[
+                _transforms.AbsoluteActions(joint_position_mask),
+                franka_policy.FrankaOutputs(),
+            ],
+        )
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=ModelTransformFactory()(model_config),
+            action_sequence_keys=self.action_sequence_keys,
         )
 
 
@@ -979,6 +1028,56 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
         num_train_steps=20_000,
         batch_size=32,
+    ),
+    #
+    # LoRA fine-tune of the joint-position π0.5-DROID checkpoint on the local
+    # LeRobot v3 Franka dataset.
+    #
+    TrainConfig(
+        name="pi05_franka_finetune",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=15,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotFrankaDataConfig(
+            repo_id="franka_object",
+            base_config=DataConfig(
+                lerobot_root="/data/mxy/lerobot/franka_object",
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_droid_jointpos/params"
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=5e-5,
+            decay_steps=5_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=15,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=5_000,
+        save_interval=1_000,
+        keep_period=1_000,
+        wandb_enabled=False,
+        policy_metadata={
+            "robot": "franka_panda",
+            "cameras": ["right", "wrist"],
+            "action_space": "joint_position+gripper",
+            "action_representation": "absolute",
+        },
     ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
