@@ -28,4 +28,4 @@ cd "${HERE}"
 CUDA_VISIBLE_DEVICES="${GPU}" \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
 PYTHONPATH="${HERE}/src" \
-  "${PYTHON}" -u pi_inference_test.py 2>&1 | tee infer.log
+  "${PYTHON}" -u franka_inference_test.py 2>&1 | tee infer.log
