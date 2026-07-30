@@ -1,10 +1,20 @@
 import dataclasses
 
 import jax
+import pandas as pd
 
 from openpi.models import pi0_config
 from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
+
+
+def test_lerobot_v3_task_mapping():
+    tasks = pd.DataFrame({"task_index": [0, 1]}, index=["pick up the apple", "place it on the plate"])
+
+    assert _data_loader._lerobot_task_mapping(tasks) == {  # noqa: SLF001
+        0: "pick up the apple",
+        1: "place it on the plate",
+    }
 
 
 def test_torch_data_loader():

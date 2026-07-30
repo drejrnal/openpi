@@ -7,7 +7,7 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+import lerobot.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
 
@@ -127,6 +127,24 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+def _lerobot_task_mapping(tasks: object) -> dict[int, str]:
+    """Convert LeRobot v2/v3 task metadata to the mapping expected by the prompt transform."""
+    if isinstance(tasks, dict):
+        return {int(task_index): str(task) for task_index, task in tasks.items()}
+
+    # LeRobot v3 stores tasks in a pandas DataFrame whose index contains the
+    # task string and whose ``task_index`` column contains the integer ID.
+    if hasattr(tasks, "iterrows"):
+        mapping = {
+            int(row["task_index"]): str(task)
+            for task, row in tasks.iterrows()  # pyright: ignore[reportAttributeAccessIssue]
+        }
+        if mapping:
+            return mapping
+
+    raise TypeError(f"Unsupported LeRobot task metadata type: {type(tasks).__name__}")
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
@@ -137,16 +155,17 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=data_config.lerobot_root)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        root=data_config.lerobot_root,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
     )
 
     if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(_lerobot_task_mapping(dataset_meta.tasks))])
 
     return dataset
 

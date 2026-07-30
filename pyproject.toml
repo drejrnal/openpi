@@ -14,10 +14,11 @@ dependencies = [
     "flax==0.10.2",
     "fsspec[gcs]>=2024.6.0",
     "gym-aloha>=0.1.1",
+    "h5py>=3.10.0",
     "imageio>=2.36.1",
     "jax[cuda12]==0.5.3",
     "jaxtyping==0.2.36",
-    "lerobot",
+    "lerobot==0.4.4",
     "ml_collections==1.0.0",
     "numpy>=1.22.4,<2.0.0",
     "numpydantic>=1.6.6",
@@ -63,11 +64,13 @@ rlds = [
 ]
 
 [tool.uv]
-override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
+# LeRobot requires rerun-sdk only for its visualization commands. Releases
+# >=0.24 force NumPy 2, while this OpenPI revision still requires NumPy <2.
+# Dataset loading does not use rerun, so retain the last NumPy-1-compatible SDK.
+override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74", "rerun-sdk==0.22.1"]
 
 [tool.uv.sources]
 openpi-client = { workspace = true }
-lerobot = { git = "https://github.com/huggingface/lerobot", rev = "0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" }
 dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
 
 [tool.uv.workspace]
