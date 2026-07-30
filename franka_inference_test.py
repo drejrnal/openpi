@@ -1,4 +1,4 @@
-"""Run joint-position inference with the pi0.5-DROID-JointPos checkpoint."""
+"""Run joint-velocity inference with the Franka-fine-tuned pi0.5-DROID checkpoint."""
 
 import pathlib
 
@@ -26,7 +26,6 @@ def make_example() -> dict:
     wrist_image[..., 1] = x[None, :]
     wrist_image[..., 2] = y[:, None]
     wrist_image[96:128, 96:128, 0] = 255
-    
 
     return {
         "observation/image": right_image,
@@ -70,7 +69,7 @@ def main() -> None:
     actions = np.asarray(result["actions"])
 
     np.set_printoptions(precision=5, suppress=True, linewidth=180)
-    print("\naction semantics: [target_joint_position_1 ... target_joint_position_7, gripper_position]")
+    print("\naction semantics: [joint_velocity_1 ... joint_velocity_7, gripper_position]")
     print("actions shape:", actions.shape)
     print("actions dtype:", actions.dtype)
     print("per-dimension min:", actions.min(axis=0))

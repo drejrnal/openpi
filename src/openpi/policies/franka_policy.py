@@ -1,12 +1,21 @@
 """Data transforms for a Franka Panda with an external and wrist camera."""
 
+from collections.abc import Mapping
 import dataclasses
+from enum import Enum
 
 import einops
 import numpy as np
 
 from openpi import transforms
 from openpi.models import model as _model
+
+
+class FrankaActionSpace(str, Enum):
+    """Supported Franka arm action representations."""
+
+    JOINT_POSITION = "joint_position"
+    JOINT_VELOCITY = "joint_velocity"
 
 
 def _parse_image(value: np.ndarray, *, key: str) -> np.ndarray:
@@ -36,10 +45,12 @@ class FrankaInputs(transforms.DataTransformFn):
       - ``observation/image``: right-side external RGB camera
       - ``observation/wrist_image``: wrist RGB camera
       - ``observation/state``: seven joint positions followed by gripper state
-      - ``actions``: optional absolute joint-position targets and gripper command
+      - ``actions``: optional mapping containing the selected arm action
+        representation and an absolute gripper command
     """
 
     model_type: _model.ModelType
+    action_space: FrankaActionSpace = FrankaActionSpace.JOINT_POSITION
 
     def __call__(self, data: dict) -> dict:
         state = np.asarray(data["observation/state"], dtype=np.float32)
@@ -67,7 +78,32 @@ class FrankaInputs(transforms.DataTransformFn):
             "image_mask": dict(zip(image_names, image_masks, strict=True)),
         }
         if "actions" in data:
-            actions = np.asarray(data["actions"], dtype=np.float32)
+            action_data = data["actions"]
+            if isinstance(action_data, Mapping):
+                try:
+                    selected_actions = action_data[self.action_space.value]
+                except KeyError as e:
+                    raise KeyError(
+                        f"actions must contain {self.action_space.value!r} for {self.action_space.name}"
+                    ) from e
+                actions = np.asarray(selected_actions, dtype=np.float32)
+                if actions.shape[-1:] == (7,):
+                    try:
+                        gripper_position = np.asarray(action_data["gripper_position"], dtype=np.float32)
+                    except KeyError as e:
+                        raise KeyError(
+                            "seven-dimensional arm actions require an absolute 'gripper_position' action"
+                        ) from e
+                    if gripper_position.shape[-1:] == (8,):
+                        gripper_position = gripper_position[..., -1:]
+                    if gripper_position.shape != (*actions.shape[:-1], 1):
+                        raise ValueError(
+                            "gripper_position must match the arm-action leading dimensions and have one channel; "
+                            f"got arm actions {actions.shape} and gripper position {gripper_position.shape}."
+                        )
+                    actions = np.concatenate([actions, gripper_position], axis=-1)
+            else:
+                actions = np.asarray(action_data, dtype=np.float32)
             if actions.ndim < 1 or actions.shape[-1] != 8 or not np.all(np.isfinite(actions)):
                 raise ValueError(f"actions must be finite with final dimension 8, got {actions.shape}.")
             result["actions"] = actions
@@ -79,7 +115,7 @@ class FrankaInputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class FrankaOutputs(transforms.DataTransformFn):
-    """Return the seven joint-position targets and one gripper command."""
+    """Return the seven selected arm actions and one gripper command."""
 
     def __call__(self, data: dict) -> dict:
         return {"actions": np.asarray(data["actions"][..., :8])}

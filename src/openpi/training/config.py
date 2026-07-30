@@ -468,12 +468,29 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotFrankaDataConfig(DataConfigFactory):
-    """Transforms for the local v3 Franka joint-position dataset."""
+    """Transforms for a local v3 Franka joint-position or joint-velocity dataset."""
 
-    action_sequence_keys: Sequence[str] = ("action",)
+    action_space: franka_policy.FrankaActionSpace = franka_policy.FrankaActionSpace.JOINT_POSITION
+    joint_position_action_key: str = "action"
+    joint_velocity_action_key: str = "data.actions.joint_velocity"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        match self.action_space:
+            case franka_policy.FrankaActionSpace.JOINT_POSITION:
+                action_key = self.joint_position_action_key
+                action_structure = {self.action_space.value: action_key}
+                action_sequence_keys = (action_key,)
+            case franka_policy.FrankaActionSpace.JOINT_VELOCITY:
+                action_key = self.joint_velocity_action_key
+                action_structure = {
+                    self.action_space.value: action_key,
+                    # The existing absolute-position action retains the
+                    # absolute gripper command in its final channel.
+                    "gripper_position": self.joint_position_action_key,
+                }
+                action_sequence_keys = (action_key, self.joint_position_action_key)
+
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
@@ -481,33 +498,32 @@ class LeRobotFrankaDataConfig(DataConfigFactory):
                         "observation/image": "observation.images.exterior_image",
                         "observation/wrist_image": "observation.images.wrist_image",
                         "observation/state": "observation.state",
-                        "actions": "action",
+                        "actions": action_structure,
                         "prompt": "prompt",
                     }
                 )
             ]
         )
 
-        # The dataset contains absolute targets for joints 1-7. π0.5 is trained
-        # on deltas for these dimensions; the gripper command remains absolute.
-        joint_position_mask = _transforms.make_bool_mask(7, -1)
         data_transforms = _transforms.Group(
-            inputs=[
-                franka_policy.FrankaInputs(model_type=model_config.model_type),
-                _transforms.DeltaActions(joint_position_mask),
-            ],
-            outputs=[
-                _transforms.AbsoluteActions(joint_position_mask),
-                franka_policy.FrankaOutputs(),
-            ],
+            inputs=[franka_policy.FrankaInputs(model_type=model_config.model_type, action_space=self.action_space)],
+            outputs=[franka_policy.FrankaOutputs()],
         )
+        if self.action_space == franka_policy.FrankaActionSpace.JOINT_POSITION:
+            # Absolute targets become offsets from the current state for the
+            # first seven joints. The gripper command remains absolute.
+            joint_position_mask = _transforms.make_bool_mask(7, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(joint_position_mask)],
+                outputs=[_transforms.AbsoluteActions(joint_position_mask)],
+            )
 
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=ModelTransformFactory()(model_config),
-            action_sequence_keys=self.action_sequence_keys,
+            action_sequence_keys=action_sequence_keys,
         )
 
 
@@ -1030,9 +1046,9 @@ _CONFIGS = [
         batch_size=32,
     ),
     #
-    # Full-parameter fine-tune of the joint-position π0.5-DROID checkpoint on
-    # the local LeRobot v3 Franka dataset. Shard the model and optimizer across
-    # all eight GPUs because a full π0.5 fine-tune does not fit on one GPU.
+    # Full-parameter fine-tune of the standard π0.5-DROID checkpoint on the
+    # local LeRobot v3 Franka dataset. Shard the model and optimizer across all
+    # eight GPUs because a full π0.5 fine-tune does not fit on one GPU.
     #
     TrainConfig(
         name="pi05_franka_finetune",
@@ -1043,13 +1059,19 @@ _CONFIGS = [
         ),
         data=LeRobotFrankaDataConfig(
             repo_id="franka_object",
+            action_space=franka_policy.FrankaActionSpace.JOINT_VELOCITY,
+            assets=AssetsConfig(
+                # Preserve the normalization convention learned by pi05_droid.
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                asset_id="droid",
+            ),
             base_config=DataConfig(
                 lerobot_root="/data/mxy/lerobot/franka_object",
                 prompt_from_task=True,
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_droid_jointpos/params"
+            "gs://openpi-assets/checkpoints/pi05_droid/params"
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=500,
@@ -1070,8 +1092,9 @@ _CONFIGS = [
         policy_metadata={
             "robot": "franka_panda",
             "cameras": ["right", "wrist"],
-            "action_space": "joint_position+gripper",
-            "action_representation": "absolute",
+            "action_space": "joint_velocity+gripper_position",
+            "action_representation": "velocity",
+            "control_frequency_hz": 15,
         },
     ),
     #

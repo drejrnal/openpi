@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the pi05_base inference smoke test on a chosen GPU.
+# Run the Franka joint-velocity inference smoke test on a chosen GPU.
 #
 # Usage:
 #   ./run_inference.sh          # default GPU (7)
